@@ -1,0 +1,58 @@
+stages:
+  - build_maven
+  - build_docker
+  - deploy
+
+build_maven:
+  stage: build_maven
+  image:
+    name: openjdk:17-jdk-alpine
+  script:
+    - chmod +x mvnw
+    - ./mvnw clean compile package
+    - VERSION=`./mvnw help:evaluate -Dexpression=project.version -q -DforceStdout`
+    - echo "VERSION=$VERSION" >> build.env
+  artifacts:
+    paths:
+      - application/target/
+      - build.env
+    reports:
+      dotenv: build.env
+
+build_docker:
+  stage: build_docker
+  image:
+    name: gcr.io/kaniko-project/executor:v1.9.0-debug
+    entrypoint: [""]
+  dependencies:
+    - build_maven
+  script:
+    - chmod +x build.env
+    - source ./build.env
+    - cat build.env
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile "${CI_PROJECT_DIR}/Dockerfile"
+      --destination "${CI_REGISTRY_IMAGE}:${VERSION}-${CI_COMMIT_SHORT_SHA}"
+      --build-arg VERSION=$VERSION
+    - echo "VERSION=$VERSION" > build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+
+deploy:
+  stage: deploy
+  image:
+    name: alpine/helm:latest
+  dependencies:
+    - build_docker
+  script:
+    # Install or upgrade the Helm chart
+    # - helm upgrade <releaseName> <helmChart Directory> --install --values <values.yaml file Directory> --set image=<imageName:[imageTag]> --kube-token=${KUBE_TOKEN} --timeout 300s --debug
+    - helm upgrade javatemplate ./helmChart 
+      --install 
+      --values ${CI_PROJECT_DIR}/helmChart/values.yaml 
+      --set image=${CI_REGISTRY_IMAGE}:${VERSION}-${CI_COMMIT_SHORT_SHA} 
+      --kube-token=${KUBE_TOKEN} 
+      --timeout 300s 
+      --debug
